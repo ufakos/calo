@@ -1,0 +1,534 @@
+// Calo Security Posture Assessment Platform
+// Prisma Schema Definition
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// User & Authentication
+// ============================================
+
+enum UserRole {
+  ADMIN
+  ANALYST
+  VIEWER
+}
+
+model User {
+  id            String       @id @default(cuid())
+  email         String       @unique
+  name          String?
+  password      String
+  role          UserRole     @default(VIEWER)
+  isActive      Boolean      @default(true)
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  // Relations
+  assessments   Assessment[] @relation("CreatedBy")
+  activityLogs  ActivityLog[]
+
+  @@map("users")
+}
+
+// ============================================
+// Organization & Assessment
+// ============================================
+
+model Organization {
+  id            String       @id @default(cuid())
+  name          String
+  domain        String       @unique
+  notes         String?      @db.Text
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  // Relations
+  assessments   Assessment[]
+
+  @@map("organizations")
+}
+
+enum AssessmentStatus {
+  DRAFT
+  IN_PROGRESS
+  REVIEW
+  COMPLETED
+  ARCHIVED
+}
+
+model Assessment {
+  id              String           @id @default(cuid())
+  organizationId  String
+  createdById     String
+  status          AssessmentStatus @default(DRAFT)
+  name            String
+  startedAt       DateTime?
+  completedAt     DateTime?
+  
+  // Scope & Assumptions (Step 0)
+  scopeJson       Json?            // { domains: [], excludedPaths: [], testWindow: {} }
+  assumptionsText String?          @db.Text
+  constraintsText String?          @db.Text
+  
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  // Relations
+  organization    Organization     @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdBy       User             @relation("CreatedBy", fields: [createdById], references: [id])
+  assets          Asset[]
+  observations    Observation[]
+  evidences       Evidence[]
+  risks           Risk[]
+  actionItems     ActionItem[]
+  auditControls   AuditControl[]
+  toolRuns        ToolRun[]
+  reports         Report[]
+
+  @@map("assessments")
+}
+
+// ============================================
+// Asset Management (Step 1: Attack Surface)
+// ============================================
+
+enum AssetType {
+  DOMAIN
+  SUBDOMAIN
+  URL
+  API_HOST
+  THIRD_PARTY
+  MOBILE_APP
+  IP_ADDRESS
+}
+
+enum AssetConfidence {
+  CONFIRMED
+  HIGH
+  MEDIUM
+  LOW
+  UNVERIFIED
+}
+
+model Asset {
+  id           String          @id @default(cuid())
+  assessmentId String
+  type         AssetType
+  value        String          // The domain, URL, or identifier
+  displayName  String?
+  confidence   AssetConfidence @default(UNVERIFIED)
+  approved     Boolean         @default(false)  // Must be approved before tool runs
+  notes        String?         @db.Text
+  evidenceRefs String[]        @default([]) // Array of Evidence IDs
+  metadata     Json?           // Additional data (e.g., tech stack, ports)
+  discoveredBy String?         // 'manual', 'ct_logs', 'dns', etc.
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  // Relations
+  assessment   Assessment      @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  toolRuns     ToolRun[]
+
+  @@unique([assessmentId, type, value])
+  @@map("assets")
+}
+
+// ============================================
+// Observations (Step 2: Hands-on Findings)
+// ============================================
+
+enum ObservationCategory {
+  TLS
+  HEADERS
+  CORS
+  AUTH
+  ERRORS
+  RATELIMIT
+  MOBILE
+  API
+  INFRASTRUCTURE
+  THIRD_PARTY
+  OTHER
+}
+
+enum Severity {
+  INFO
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model Observation {
+  id            String              @id @default(cuid())
+  assessmentId  String
+  category      ObservationCategory
+  title         String
+  summary       String              @db.Text
+  severity      Severity            @default(INFO)
+  details       String?             @db.Text
+  analystNotes  String?             @db.Text
+  evidenceRefs  String[]            // Array of Evidence IDs
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  // Relations
+  assessment    Assessment          @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@map("observations")
+}
+
+// ============================================
+// Evidence Storage
+// ============================================
+
+enum EvidenceType {
+  SCREENSHOT
+  HEADER_SNIPPET
+  TERMINAL_OUTPUT
+  CODE_SNIPPET
+  DOCUMENT
+  LINK
+  TOOL_OUTPUT
+}
+
+enum RedactionStatus {
+  PENDING
+  REDACTED
+  VERIFIED
+  NOT_REQUIRED
+}
+
+model Evidence {
+  id              String          @id @default(cuid())
+  assessmentId    String
+  type            EvidenceType
+  title           String?
+  description     String?         @db.Text
+  
+  // Storage
+  storageKey      String?         // MinIO object key
+  originalKey     String?         // Original unredacted version (stored separately)
+  mimeType        String?
+  fileSize        Int?
+  
+  // For link/snippet types
+  content         String?         @db.Text
+  sourceUrl       String?
+  
+  // Redaction
+  redactionStatus RedactionStatus @default(PENDING)
+  redactedAt      DateTime?
+  
+  // Metadata
+  metadata        Json?
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  // Relations
+  assessment      Assessment      @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@map("evidences")
+}
+
+// ============================================
+// Risk Ranking (Step 3: Top 5 Risks)
+// ============================================
+
+enum RiskLikelihood {
+  RARE
+  UNLIKELY
+  POSSIBLE
+  LIKELY
+  ALMOST_CERTAIN
+}
+
+enum RiskImpact {
+  NEGLIGIBLE
+  MINOR
+  MODERATE
+  MAJOR
+  SEVERE
+}
+
+model Risk {
+  id            String         @id @default(cuid())
+  assessmentId  String
+  rank          Int            // 1-5
+  title         String
+  description   String?        @db.Text
+  
+  // Scoring
+  impact        RiskImpact     @default(MODERATE)
+  likelihood    RiskLikelihood @default(POSSIBLE)
+  blastRadius   String?        // e.g., "All users", "Admin accounts", etc.
+  easeToFix     String?        // e.g., "Quick config change", "Requires refactor"
+  
+  // Evidence & Rationale
+  rationale     String?        @db.Text
+  evidenceRefs  String[]       // Array of Evidence IDs
+  
+  // Recommendations
+  recommendation String?       @db.Text
+  
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  // Relations
+  assessment    Assessment     @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@unique([assessmentId, rank])
+  @@map("risks")
+}
+
+// ============================================
+// Action Plan (Step 4)
+// ============================================
+
+enum ActionPhase {
+  PRE_ONBOARDING
+  FIRST_2_WEEKS
+  MONTH_1
+  QUARTER_1
+}
+
+enum ActionOwner {
+  PLATFORM
+  PRODUCT
+  SECURITY
+  ENGINEERING
+  DEVOPS
+}
+
+enum ActionPriority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model ActionItem {
+  id            String        @id @default(cuid())
+  assessmentId  String
+  phase         ActionPhase
+  ownerType     ActionOwner
+  priority      ActionPriority @default(MEDIUM)
+  title         String
+  description   String?       @db.Text
+  successMetric String?       @db.Text
+  dueDate       DateTime?
+  completed     Boolean       @default(false)
+  completedAt   DateTime?
+  notes         String?       @db.Text
+  
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  // Relations
+  assessment    Assessment    @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@map("action_items")
+}
+
+// ============================================
+// Audit Controls (Step 5: Audit Readiness)
+// ============================================
+
+enum AuditFrequency {
+  CONTINUOUS
+  DAILY
+  WEEKLY
+  MONTHLY
+  QUARTERLY
+  ANNUALLY
+  ON_DEMAND
+}
+
+model AuditControl {
+  id               String         @id @default(cuid())
+  assessmentId     String
+  title            String
+  description      String?        @db.Text
+  evidenceGenerated String?       @db.Text  // What evidence this control produces
+  frequency        AuditFrequency @default(ON_DEMAND)
+  automated        Boolean        @default(false)
+  
+  // Framework mapping
+  mappedFramework  String[]       // e.g., ['SOC2-CC6.1', 'ISO27001-A.12.6']
+  
+  // Implementation details
+  implementation   String?        @db.Text
+  toolsUsed        String[]
+  
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  // Relations
+  assessment       Assessment     @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@map("audit_controls")
+}
+
+// ============================================
+// Tool Execution Tracking
+// ============================================
+
+enum ToolName {
+  TLS_CHECK
+  HEADER_CHECK
+  SECURITY_HEADERS
+  CORS_CHECK
+  DNS_LOOKUP
+  CERT_TRANSPARENCY
+  TECH_FINGERPRINT
+  CUSTOM
+}
+
+enum ToolRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+  TIMEOUT
+}
+
+model ToolRun {
+  id            String        @id @default(cuid())
+  assessmentId  String
+  assetId       String?
+  toolName      ToolName
+  target        String        // The specific target URL/domain
+  status        ToolRunStatus @default(QUEUED)
+  
+  // Execution details
+  parametersJson Json?        // Tool-specific parameters
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  durationMs    Int?
+  
+  // Output storage (MinIO keys)
+  stdoutRef     String?
+  stderrRef     String?
+  
+  // Results
+  resultSummary String?       @db.Text
+  exitCode      Int?
+  errorMessage  String?
+  
+  // Rate limiting tracking
+  requestCount  Int           @default(0)
+  
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  // Relations
+  assessment    Assessment    @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  asset         Asset?        @relation(fields: [assetId], references: [id])
+
+  @@map("tool_runs")
+}
+
+// ============================================
+// Report Generation
+// ============================================
+
+enum ReportFormat {
+  PDF
+  MARKDOWN
+  HTML
+  JSON
+}
+
+enum ReportMode {
+  FULL
+  EXECUTIVE
+  TECHNICAL
+  THREE_PAGE
+}
+
+model Report {
+  id           String       @id @default(cuid())
+  assessmentId String
+  format       ReportFormat
+  mode         ReportMode   @default(FULL)
+  title        String?
+  
+  // Storage
+  storageKey   String       // MinIO object key
+  fileSize     Int?
+  
+  // Generation details
+  generatedAt  DateTime     @default(now())
+  generatedBy  String?      // User ID
+  
+  // Options used
+  optionsJson  Json?        // { includeAppendix: true, redactLevel: 'high' }
+  
+  createdAt    DateTime     @default(now())
+
+  // Relations
+  assessment   Assessment   @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+
+  @@map("reports")
+}
+
+// ============================================
+// Activity Log (Audit Trail)
+// ============================================
+
+enum ActivityAction {
+  CREATE
+  UPDATE
+  DELETE
+  VIEW
+  EXPORT
+  TOOL_RUN
+  APPROVE
+  REJECT
+  LOGIN
+  LOGOUT
+}
+
+model ActivityLog {
+  id          String         @id @default(cuid())
+  userId      String?
+  action      ActivityAction
+  entityType  String         // 'assessment', 'observation', 'tool_run', etc.
+  entityId    String?
+  details     Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime       @default(now())
+
+  // Relations
+  user        User?          @relation(fields: [userId], references: [id])
+
+  @@index([entityType, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("activity_logs")
+}
+
+// ============================================
+// Approved Domains Allowlist
+// ============================================
+
+model ApprovedDomain {
+  id           String    @id @default(cuid())
+  assessmentId String
+  domain       String    // eTLD+1 or subdomain
+  addedAt      DateTime  @default(now())
+  addedBy      String?   // User ID
+  expiresAt    DateTime? // Optional expiration
+  
+  @@unique([assessmentId, domain])
+  @@map("approved_domains")
+}

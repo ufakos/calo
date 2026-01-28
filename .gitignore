@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+/dist
+/build
+/.next
+/out
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Local tokens/secrets
+.tmp_token
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# Coverage
+/coverage
+
+# Prisma
+prisma/dev.db*
+
+# Docker data (if any)
+**/data

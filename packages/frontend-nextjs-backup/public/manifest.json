@@ -1,0 +1,9 @@
+{
+  "name": "SecureScope",
+  "short_name": "SecureScope",
+  "description": "Black-Box Security Posture Assessment Platform",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#3b82f6"
+}
