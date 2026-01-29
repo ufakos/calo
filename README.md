@@ -90,11 +90,6 @@ calo/
    - API Docs: http://localhost:4000/docs
    - MinIO Console: http://localhost:9001
 
-### Default Login
-
-After seeding:
-- **Email**: admin@securescope.io
-- **Password**: admin123456
 
 ## 🔧 Development
 
